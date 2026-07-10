@@ -6,7 +6,6 @@
 
 generator client {
   provider = "prisma-client-js"
-  output   = "../generated/prisma"
 }
 
 datasource db {
@@ -30,6 +29,7 @@ model Chat {
   user      User     @relation(fields: [userId], references: [id])
   userInput String
   botReply  String?
+  promptType String  @default("sosmed_mastermind")
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }

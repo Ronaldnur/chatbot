@@ -5,17 +5,17 @@ class ChatbotController {
     static async chat(req, res) {
         try {
             const userId = req.userData.id; 
-            const { userInput } = req.body;
+            const { userInput, promptType = "sosmed_mastermind", tone } = req.body;
 
             if (!userInput) {
                 return responseWrapper(res, 400, "User input is required", {});
             }
 
-            const botReply = await chatbotService.sendChatbot(userId, userInput);
+            const botReply = await chatbotService.sendChatbot(userId, userInput, promptType, tone);
 
-            return responseWrapper(res, 200, "Chat processed successfully", { userId, userInput, botReply });
+            return responseWrapper(res, 200, "Chat processed successfully", { userId, userInput, promptType, botReply });
         } catch (error) {
-            return responseWrapper(res, error.statusCode, error.message, {});
+            return responseWrapper(res, error.statusCode || 500, error.message || "Internal Server error", {});
         }
     }
 
@@ -53,13 +53,13 @@ class ChatbotController {
     static async updateBotChat(req,res){
         try {
             const { id } = req.params;
-            const { newPrompt } = req.body; 
+            const { newPrompt, tone } = req.body; 
     
             if (!newPrompt) {
                 return res.status(400).json({ message: "Prompt tidak boleh kosong" });
             }
     
-            const updatedChat = await chatbotService.updateChatbot(id, newPrompt);
+            const updatedChat = await chatbotService.updateChatbot(id, newPrompt, tone);
             
         if (!updatedChat || !updatedChat.botReply) {
             return res.status(500).json({ message: "Gagal memperbarui chat" });
