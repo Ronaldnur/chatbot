@@ -16,7 +16,6 @@ function getPromptContent(promptType) {
         }
         const promptPath = path.join(__dirname, "../../", fileName);
         let content = fs.readFileSync(promptPath, "utf-8");
-        // Hapus komentar developer (<!-- ... -->) agar bersih saat dikirim ke Gemini
         content = content.replace(/<!--[\s\S]*?-->/g, "").trim();
         return content;
     } catch (error) {
@@ -39,7 +38,6 @@ function formatReply(botReply, promptType) {
 
 async function extractTranscriptIfNeeded(input) {
     if (!input) return input;
-    // Cek apakah di dalam input terdapat link YouTube (watch, youtu.be, atau shorts)
     const urlRegex = /(https?:\/\/(?:www\.)?(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/shorts\/)[^\s&]+)/i;
     const match = input.match(urlRegex);
 
@@ -50,33 +48,102 @@ async function extractTranscriptIfNeeded(input) {
             const transcriptArray = await YoutubeTranscript.fetchTranscript(url);
             if (transcriptArray && transcriptArray.length > 0) {
                 const fetchedText = transcriptArray.map(item => item.text).join(" ");
-                // Gabungkan instruksi user dengan transkrip asli dari video
                 return `${input}\n\n[Transkrip Video Asli dari ${url}]:\n${fetchedText}`;
             }
         } catch (error) {
             console.warn("Gagal fetch transkrip dari YouTube URL:", error.message);
-            throw new ApiError(400, `Gagal mengambil subtitle/CC otomatis dari link YouTube tersebut (${error.message}). Pastikan video memiliki subtitle yang aktif atau paste teks transkripnya secara manual.`);
+            throw new ApiError(400, `Gagal mengambil subtitle/CC otomatis dari link YouTube tersebut (${error.message}).`);
         }
     }
     return input;
 }
 
-async function sendChatbot(userId, userInput, promptType = "sosmed_mastermind", tone = "Kasual, Cepat, dan Menarik") {
+/**
+ * NEW LOGIC: Multi-Table Conversation & Message Service
+ */
+
+async function getConversations(userId) {
     try {
-        const chatRecord = await prisma.chat.create({
-            data: { 
-                userId, 
-                userInput, 
-                botReply: null,
-                promptType
+        const conversations = await prisma.conversation.findMany({
+            where: { userId },
+            select: {
+                id: true,
+                title: true,
+                createdAt: true
+            },
+            orderBy: {
+                createdAt: 'desc'
+            }
+        });
+        return conversations;
+    } catch (error) {
+        console.error("Failed to get conversations:", error.message);
+        throw new ApiError(error.statusCode || 400, error.message);
+    }
+}
+
+async function getConversationMessages(userId, conversationId) {
+    try {
+        const conversation = await prisma.conversation.findFirst({
+            where: { id: conversationId, userId },
+            include: {
+                messages: {
+                    orderBy: { createdAt: 'asc' }
+                }
             }
         });
 
-        // Ekstrak transkrip YouTube jika input mengandung link YouTube
+        if (!conversation) {
+            throw new ApiError(404, "Conversation not found");
+        }
+
+        return conversation;
+    } catch (error) {
+        console.error("Failed to get conversation messages:", error.message);
+        throw new ApiError(error.statusCode || 400, error.message);
+    }
+}
+
+async function sendMessage({ userId, userInput, conversationId, promptType = "sosmed_mastermind", tone = "Kasual, Cepat, dan Menarik" }) {
+    try {
+        let conversation;
+
+        if (conversationId) {
+            // Lanjut Sesi: pastikan sesi milik user tersebut ada dan TIDAK mengubah title obrolan
+            conversation = await prisma.conversation.findFirst({
+                where: { id: conversationId, userId }
+            });
+
+            if (!conversation) {
+                throw new ApiError(404, "Conversation not found");
+            }
+        } else {
+            // Sesi Baru: buat data baru di tabel Conversation dengan title = userInput
+            const title = userInput.trim().slice(0, 100);
+            conversation = await prisma.conversation.create({
+                data: {
+                    userId,
+                    title: title,
+                    promptType: promptType
+                }
+            });
+        }
+
+        // Simpan pesan user ke tabel Message
+        const userMessage = await prisma.message.create({
+            data: {
+                conversationId: conversation.id,
+                sender: "user",
+                content: userInput
+            }
+        });
+
+        // Proses balasan AI via Gemini API
+        const activePromptType = conversation.promptType || promptType;
         const processedInput = await extractTranscriptIfNeeded(userInput);
         let resultText = "";
 
-        if (promptType === "youtube_repurpose" || promptType === "prompt_youtube") {
+        if (activePromptType === "youtube_repurpose" || activePromptType === "prompt_youtube") {
             let template = getPromptContent("youtube_repurpose");
             let prompt = template.replace(/\{\{youtube_transcript\}\}/g, processedInput)
                                  .replace(/\{\{tone\}\}/g, tone || "Kasual, Cepat, dan Menarik");
@@ -101,53 +168,80 @@ async function sendChatbot(userId, userInput, promptType = "sosmed_mastermind", 
 
         const botReply = resultText || "Error generating response";
 
-        await prisma.chat.update({
-            where: { id: chatRecord.id },
-            data: { botReply }
+        // Simpan balasan AI ke tabel Message
+        const aiMessage = await prisma.message.create({
+            data: {
+                conversationId: conversation.id,
+                sender: "ai",
+                content: botReply
+            }
         });
 
-        return formatReply(botReply, promptType);
+        // Simpan juga ke tabel Chat lama (backward compatibility)
+        await prisma.chat.create({
+            data: {
+                userId,
+                userInput,
+                botReply,
+                promptType: activePromptType
+            }
+        }).catch(() => {});
+
+        return {
+            conversationId: conversation.id,
+            title: conversation.title,
+            botReply: formatReply(botReply, activePromptType),
+            userMessage,
+            aiMessage
+        };
     } catch (error) {
         console.error("Chatbot API Error:", error.message);
         throw new ApiError(error.statusCode || 400, error.message);
     }
 }
 
+async function deleteConversationById(userId, conversationId) {
+    try {
+        const conversation = await prisma.conversation.findFirst({
+            where: { id: conversationId, userId }
+        });
+
+        if (!conversation) {
+            throw new ApiError(404, "Conversation not found");
+        }
+
+        return await prisma.conversation.delete({
+            where: { id: conversationId }
+        });
+    } catch (error) {
+        throw new ApiError(error.statusCode || 400, error.message);
+    }
+}
+
+/**
+ * LEGACY CHAT FUNCTIONS (maintained for backward compatibility)
+ */
+async function sendChatbot(userId, userInput, promptType = "sosmed_mastermind", tone = "Kasual, Cepat, dan Menarik") {
+    return sendMessage({ userId, userInput, promptType, tone });
+}
+
 async function deleteChatById(chatId) {
     try {
-        const chat = await prisma.chat.findUnique({
-            where: { id: chatId },
-        });
-
-        if (!chat) {
-            throw new ApiError(404, "Chat not found");
-        }
-        
-        const deleteChat = await prisma.chat.delete({
-            where: { id: chatId },
-        });
-
-        return deleteChat;
+        const chat = await prisma.chat.findUnique({ where: { id: chatId } });
+        if (!chat) throw new ApiError(404, "Chat not found");
+        return await prisma.chat.delete({ where: { id: chatId } });
     } catch (error) {
-        console.error("failed delete chat", error.response?.data || error.message);
-        throw new ApiError(error.statusCode || 400, error.message); 
+        throw new ApiError(error.statusCode || 400, error.message);
     }
 }
 
 async function getChatById(chatId) {
     try {
-        const chat = await prisma.chat.findUnique({
-            where: { id: chatId },
-        });
-    
-        if (!chat) {
-            throw new ApiError(404, "Chat not found");
-        }
-
+        const chat = await prisma.chat.findUnique({ where: { id: chatId } });
+        if (!chat) throw new ApiError(404, "Chat not found");
         return { ...chat, botReply: formatReply(chat.botReply, chat.promptType) };
     } catch (error) {
-        console.error("failed to get chat ByID", error.response?.data || error.message);
-        throw new ApiError(error.statusCode || 400, error.message); 
+        throw new ApiError(error.statusCode || 400, error.message);
     }
 }
 
@@ -155,18 +249,14 @@ async function getAllChat(userId) {
     try {
         const chats = await prisma.chat.findMany({
             where: { userId },
-            orderBy: {
-                createdAt: 'desc'
-            }
+            orderBy: { createdAt: 'desc' }
         });
-
         return chats.map(chat => ({
             ...chat,
             botReply: formatReply(chat.botReply, chat.promptType)
         }));
     } catch (error) {
-        console.error("Failed To Get All Chat", error.response?.data || error.message);
-        throw new ApiError(error.statusCode || 400, error.message); 
+        throw new ApiError(error.statusCode || 400, error.message);
     }
 }
 
@@ -176,7 +266,6 @@ async function updateChatbot(chatId, newPrompt, tone = "Kasual, Cepat, dan Menar
         if (!chatRecord) throw new ApiError(404, "Chat tidak ditemukan");
 
         const promptType = chatRecord.promptType || "sosmed_mastermind";
-        // Ekstrak transkrip YouTube jika newPrompt mengandung link YouTube
         const processedInput = await extractTranscriptIfNeeded(newPrompt);
         let resultText = "";
 
@@ -187,15 +276,13 @@ async function updateChatbot(chatId, newPrompt, tone = "Kasual, Cepat, dan Menar
 
             const model = genAI.getGenerativeModel({
                 model: "gemini-2.5-flash",
-                generationConfig: {
-                    responseMimeType: "application/json"
-                }
+                generationConfig: { responseMimeType: "application/json" }
             });
             const result = await model.generateContent(prompt);
             resultText = await result.response.text();
         } else {
             const systemInstruction = getPromptContent("sosmed_mastermind");
-            const model = genAI.getGenerativeModel({ 
+            const model = genAI.getGenerativeModel({
                 model: "gemini-2.5-flash",
                 systemInstruction: systemInstruction
             });
@@ -203,26 +290,22 @@ async function updateChatbot(chatId, newPrompt, tone = "Kasual, Cepat, dan Menar
             resultText = await result.response.text();
         }
 
-        if (!resultText) {
-            throw new Error("Gagal mendapatkan teks dari Gemini API");
-        }
-
         const updatedChat = await prisma.chat.update({
             where: { id: chatId },
-            data: { 
-                userInput: newPrompt,
-                botReply: resultText 
-            }
+            data: { userInput: newPrompt, botReply: resultText }
         });
 
         return { ...updatedChat, botReply: formatReply(updatedChat.botReply, promptType) };
     } catch (error) {
-        console.error("Update Chatbot Error:", error?.response?.data || error?.message);
-        throw new ApiError(error?.statusCode || 500, error?.message);
+        throw new ApiError(error.statusCode || 500, error.message);
     }
 }
 
 module.exports = {
+    getConversations,
+    getConversationMessages,
+    sendMessage,
+    deleteConversationById,
     sendChatbot,
     deleteChatById,
     getChatById,

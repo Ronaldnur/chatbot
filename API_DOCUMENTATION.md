@@ -56,6 +56,69 @@ Semua endpoint `/chatbot/*` memerlukan autentikasi login. Pastikan kamu melakuka
     }
   }
   ```
+
+### C. Verifikasi Email User
+* **Endpoint**: `GET /users/verify-email` (atau `POST /users/verify-email`)
+* **Query Params / Request Body**:
+  * Query param: `?token=<verification_token>`
+  * Atau Request Body (POST):
+    ```json
+    {
+      "token": "a1b2c3d4..."
+    }
+    ```
+* **Response (200 OK)**:
+  ```json
+  {
+    "status": 200,
+    "message": "Email verified successfully",
+    "data": {
+      "id": "uuid-user-1234",
+      "email": "ronald@gmail.com",
+      "name": "Ronald Nur",
+      "isVerified": true
+    }
+  }
+  ```
+
+### D. Lupa Password (Forgot Password)
+* **Endpoint**: `POST /users/forgot-password`
+* **Headers**: `Content-Type: application/json`
+* **Request Body**:
+  ```json
+  {
+    "email": "ronald@gmail.com"
+  }
+  ```
+* **Response (200 OK)**:
+  *(Pesan sukses dikembalikan secara generik demi keamanan data pengguna)*
+  ```json
+  {
+    "status": 200,
+    "message": "If an account with that email exists, a password reset link has been sent.",
+    "data": {}
+  }
+  ```
+
+### E. Reset Password
+* **Endpoint**: `POST /users/reset-password`
+* **Headers**: `Content-Type: application/json`
+* **Request Body**:
+  ```json
+  {
+    "token": "a1b2c3d4...",
+    "newPassword": "newpassword123"
+  }
+  ```
+* **Response (200 OK)**:
+  ```json
+  {
+    "status": 200,
+    "message": "Password has been reset successfully",
+    "data": {}
+  }
+  ```
+
 > 💡 **Tips Postman**: Setelah hit endpoint `/users/login`, Postman secara otomatis menyimpan Cookie `token`. Jadi saat kamu memanggil endpoint `/chatbot/*`, cookie tersebut langsung terkirim otomatis!
 
 ---
@@ -66,7 +129,157 @@ Aplikasi ini mendukung 2 mode persona (`promptType`):
 1. **`"sosmed_mastermind"` (Default)**: Konsultan strategi sosial media umum dari file `system_prompt.md`.
 2. **`"youtube_repurpose"`**: Pengubah transkrip video YouTube menjadi naskah TikTok viral berformat JSON murni dari file `prompt_youtube.md`.
 
-### A. Kirim Pesan Baru (`send-message`)
+---
+
+### A. Ambil Daftar Sesi Obrolan untuk Sidebar (`GET /chatbot/conversations`)
+Mengambil daftar semua `Conversation` milik user yang sedang login, diurutkan dari yang terbaru (`createdAt` terbahu).
+* **Endpoint**: `GET /chatbot/conversations`
+* **Cookie**: `token=...`
+* **Response (200 OK)**:
+  ```json
+  {
+    "status": 200,
+    "message": "Successfully retrieved conversations",
+    "data": [
+      {
+        "id": "uuid-conversation-111",
+        "title": "Bagaimana cara membuat hook TikTok yang memikat...",
+        "createdAt": "2026-07-10T16:45:00.000Z"
+      },
+      {
+        "id": "uuid-conversation-222",
+        "title": "Ide konten Instagram Reels minggu depan",
+        "createdAt": "2026-07-10T15:30:00.000Z"
+      }
+    ]
+  }
+  ```
+
+---
+
+### B. Ambil Isi Pesan Obrolan (`GET /chatbot/conversations/:id`)
+Mengambil detail satu sesi obrolan beserta array `messages` (pesan dari `'user'` dan `'ai'`) secara berurutan.
+* **Endpoint**: `GET /chatbot/conversations/uuid-conversation-111`
+* **Cookie**: `token=...`
+* **Response (200 OK)**:
+  ```json
+  {
+    "status": 200,
+    "message": "Successfully retrieved conversation messages",
+    "data": {
+      "id": "uuid-conversation-111",
+      "title": "Bagaimana cara membuat hook TikTok yang memikat...",
+      "promptType": "sosmed_mastermind",
+      "createdAt": "2026-07-10T16:45:00.000Z",
+      "messages": [
+        {
+          "id": "uuid-message-1",
+          "sender": "user",
+          "content": "Bagaimana cara membuat hook TikTok yang memikat...",
+          "createdAt": "2026-07-10T16:45:00.000Z"
+        },
+        {
+          "id": "uuid-message-2",
+          "sender": "ai",
+          "content": "Gunakan teknik Curiosity Gap di 3 detik pertama...",
+          "createdAt": "2026-07-10T16:45:03.000Z"
+        }
+      ]
+    }
+  }
+  ```
+
+---
+
+### C. Kirim Pesan Obrolan (`POST /chatbot/send-message`)
+
+#### 🟢 Sesi Baru (tanpa parameter `conversationId`)
+Akan otomatis membuat baris baru di tabel `Conversation` dengan `title` diambil dari `userInput`.
+* **Endpoint**: `POST /chatbot/send-message`
+* **Cookie**: `token=...`
+* **Request Body**:
+  ```json
+  {
+    "userInput": "Bagaimana cara membuat hook TikTok yang memikat retensi penonton?",
+    "promptType": "sosmed_mastermind",
+    "tone": "Kasual, Cepat, dan Menarik"
+  }
+  ```
+* **Response (200 OK)**:
+  ```json
+  {
+    "status": 200,
+    "message": "Message sent successfully",
+    "data": {
+      "conversationId": "uuid-conversation-111",
+      "title": "Bagaimana cara membuat hook TikTok yang memikat retensi penonton?",
+      "botReply": "Untuk memikat retensi...",
+      "userMessage": {
+        "id": "uuid-msg-1",
+        "sender": "user",
+        "content": "Bagaimana cara membuat hook TikTok..."
+      },
+      "aiMessage": {
+        "id": "uuid-msg-2",
+        "sender": "ai",
+        "content": "Untuk memikat retensi..."
+      }
+    }
+  }
+  ```
+
+#### 🟢 Lanjut Sesi yang Sudah Ada (dengan parameter `conversationId`)
+Tidak akan membuat sesi baru atau mengubah judul obrolan. Langsung menambahkan pesan baru ke sesi tersebut.
+* **Endpoint**: `POST /chatbot/send-message`
+* **Cookie**: `token=...`
+* **Request Body**:
+  ```json
+  {
+    "conversationId": "uuid-conversation-111",
+    "userInput": "Bisa kasih 3 contoh kalimat hook-nya?"
+  }
+  ```
+* **Response (200 OK)**:
+  ```json
+  {
+    "status": 200,
+    "message": "Message sent successfully",
+    "data": {
+      "conversationId": "uuid-conversation-111",
+      "title": "Bagaimana cara membuat hook TikTok yang memikat retensi penonton?",
+      "botReply": "Tentu! Berikut 3 contoh kalimat hook...",
+      "userMessage": {
+        "id": "uuid-msg-3",
+        "sender": "user",
+        "content": "Bisa kasih 3 contoh kalimat hook-nya?"
+      },
+      "aiMessage": {
+        "id": "uuid-msg-4",
+        "sender": "ai",
+        "content": "Tentu! Berikut 3 contoh kalimat hook..."
+      }
+    }
+  }
+  ```
+
+---
+
+### D. Hapus Sesi Obrolan (`DELETE /chatbot/conversations/:id`)
+Menghapus sesi obrolan beserta seluruh isi pesannya (Cascade).
+* **Endpoint**: `DELETE /chatbot/conversations/uuid-conversation-111`
+* **Cookie**: `token=...`
+* **Response (200 OK)**:
+  ```json
+  {
+    "status": 200,
+    "message": "Successfully deleted conversation",
+    "data": {}
+  }
+  ```
+
+---
+
+### E. Legacy Chat Endpoints (Kompatibilitas Lama)
 
 #### 🟢 Contoh 1: Mode Konsultasi Sosmed (Default)
 * **Endpoint**: `POST /chatbot/send-message`

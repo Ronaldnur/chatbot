@@ -23,11 +23,15 @@ const authentication = async (req, res, next) => {
 
         const userData = await prisma.user.findUnique({
             where: { id: decoded.id },
-            select: { id: true, email: true, name: true }
+            select: { id: true, email: true, name: true, isVerified: true }
         });
         
         if (!userData) {
             return res.status(404).json({ message: "User not found" });
+        }
+
+        if (userData.isVerified === false) {
+            return res.status(403).json({ message: "Forbidden: Please verify your email first" });
         }
 
         req.userData = {
