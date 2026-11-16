@@ -4,7 +4,7 @@ const { ApiError } = require('../helper/error');
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 const fs = require("fs");
 const path = require("path");
-const { YoutubeTranscript } = require('youtube-transcript');
+const { extractTranscriptIfNeeded } = require('../helper/youtubeHelper');
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
@@ -36,27 +36,7 @@ function formatReply(botReply, promptType) {
     return botReply;
 }
 
-async function extractTranscriptIfNeeded(input) {
-    if (!input) return input;
-    const urlRegex = /(https?:\/\/(?:www\.)?(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/shorts\/)[^\s&]+)/i;
-    const match = input.match(urlRegex);
 
-    if (match) {
-        try {
-            const url = match[0];
-            console.log("Mendeteksi link YouTube, mengambil transkrip untuk:", url);
-            const transcriptArray = await YoutubeTranscript.fetchTranscript(url);
-            if (transcriptArray && transcriptArray.length > 0) {
-                const fetchedText = transcriptArray.map(item => item.text).join(" ");
-                return `${input}\n\n[Transkrip Video Asli dari ${url}]:\n${fetchedText}`;
-            }
-        } catch (error) {
-            console.warn("Gagal fetch transkrip dari YouTube URL:", error.message);
-            throw new ApiError(400, `Gagal mengambil subtitle/CC otomatis dari link YouTube tersebut (${error.message}).`);
-        }
-    }
-    return input;
-}
 
 /**
  * NEW LOGIC: Multi-Table Conversation & Message Service
